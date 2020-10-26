@@ -192,7 +192,7 @@ ggplot(data=reduced, aes(x=I(annual_inc/1000), y=default)) + geom_smooth(method=
 
 We can estimate logistic regression with multiple explanatory variables as well. Let's use annual_inc, term, grade, and loan amount as features. Let's call this model logistic 2.
 
-```{r, multivariate logistic regression, warning=False}
+```{r multivariate logistic regression, warning=FALSE}
 logistic2<- glm(default~annual_inc + term + grade + loan_amnt, family="binomial", lc_clean)
 summary(logistic2)
 
@@ -483,8 +483,6 @@ The changes are not very significant when the percentage lost is 80% Vs 20%. As 
 Present below your best model ONLY and explain why you have chosen it (at the very least comment on AUC of your model against other models, e.g. logistic 2. Even better if you can compare your new model against logistic 2 on the realized return of 800 loans chosen out-of-sample from a data set of similar size to the validation set above.)
 
 ```{r}
-lc_clean<-lc_clean%>%
-  mutate(def=as.factor(ifelse(default=="1","D","P")))
 set.seed(1234)
 train_test_split <- initial_split(lc_clean, prop = 0.6)
 training <- training(train_test_split) #60% of the data is set aside for training
@@ -495,53 +493,56 @@ validation<-training(train_test_split) #50% of the remaining data (20% of total 
 testing<-testing(train_test_split) #50% of the remaining data (20% of total data) will be used for testing
 
 #Compare it with logistic regression (this is equivalent to lasso with lambda 0)
-logistic<-glm(def~ term*grade*loan_amnt*dti+poly(annual_inc,5), family="binomial", training)
-p_validation3<-predict(logistic, validation, type = "response")
-ROC_logistic_validation3 <- roc(validation$default,p_validation3) 
+logistic<-glm(default~poly(annual_inc,5) + term * grade * loan_amnt*dti, family="binomial", lc_clean)
+p_validation3<-predict(logistic, testing, type = "response")
+ROC_logistic_validation3 <- roc(testing$default,p_validation3) 
 
  #Plot the ROC curves
 ggroc(ROC_logistic_validation3,alpha=0.5)+
-ggtitle(paste("Model Logistic out-of-sample AUC=",round(auc(validation$default,p_validation3)*100, digits=2),"%"))+
+ggtitle(paste("Model Logistic out-of-sample AUC=",round(auc(testing$default,p_validation3)*100, digits=2),"%"))+
 geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
 ```
 
 Comparing our best model to the logistic model2, we can see that the AUC has increased from 67.51% to 68.96% (i.e. an increase of 1%). The best model was tried with LASSO and using the logistic model with the same regression; it could be observed that LASSO performed only slightly better but was computationally more inefficient. Hence, the logistic model was chosen.
 
-Let's compare our best model and the logistic model 2 on the return of the 800 loans.
+Let's compare our best model and the logistic model 2 on the return of the 800 loans. We can see that the expected return has increased.
 
-```{r}
-
-profit=0
+```{r, warning=FALSE}
+set.seed(1234)
+train_test_split <- initial_split(lc_clean, prop = 0.6)
+training <- training(train_test_split) #60% of the data is set aside for training
+remaining <- testing(train_test_split) #40% of the data is set aside for validation & testing
+set.seed(4321)
+train_test_split <- initial_split(remaining, prop = 0.5)
+validation<-training(train_test_split) #50% of the remaining data (20% of total data) will be used for validation
+p_validation3<-predict(logistic, validation, type = "response")
+testing<-testing(train_test_split) #50% of the remaining data (20% of total data) will be used for testing
 threshold=0.155
 #loop over number of loans in the validation set
-  one_or_zero_search<-ifelse(p_validation>threshold,"1","0")
-  p_class_search<-factor(one_or_zero_search,levels=levels(validation$def))
-
-  con_search<-confusionMatrix(p_class_search,validation$def,positive="1")
+  one_or_zero_search<-ifelse(p_validation3>threshold,"1","0")
+  p_class_search<-factor(one_or_zero_search,levels=levels(validation$default))
+  con_search2<-confusionMatrix(p_class_search,validation$default,positive="1")
   
   #calculate the profit associated with the threshold
-  profit=(con_search$table[1,1]*(((validation$installment)*(validation$term_months))/(validation$loan_amnt)-1)-con_search$table[1,2]*0.6)/nrow(validation)
-  #Select the 800 most profitable rows
-  profit<-tibble(x=profit)
-  profit<-profit%>%slice_max(x,n=800)
+  profit=(con_search2$table[1,1]*(((validation$installment)*(validation$term_months))/(validation$loan_amnt)-1)-con_search2$table[1,2]*0.6)/nrow(validation)
 
-paste0("Based on the testing set: Profit per loan for loan 1 is ", round(profit$x[1]*100,2), "% achieved at a threshold of 15.5%")
+ profit<-tibble(x=profit)
+  profit<-profit%>%slice_max(x,n=800)
+  profit
+paste0("Based on the validation set: Profit per loan for loan 1 is ", round(profit$x[1]*100,2), "% achieved at a threshold of 15.5%")
 paste0("The average return of all the loans would be ",round(sum(profit$x)/800*100,2),"% achieved at a threshold of 15.5%")
+
+
 ```
 
 >Q14. The file "Assessment Data_2020.csv" contains information on almost 1800 new loans. Use your best model (see previous question) to choose 200 loans to invest. For this question assume that the loss proportion is 60%. Your grade on this question will be based on the actual performance of your choices.
 
-```{r}
-
-```
 
 The submitted output should be a csv file "firstname_lastname.csv" containing only two columns: column A should have the loan number. Column B should have your name on top and then the number 1 for loans you would like to invest in and number zero otherwise. For example, if “Nicos Savva” wanted to invest in loans 2 and 4 but not in loans 1, 3, or 5, his submission should be named "nicos_savva.csv" and if opened in Excel should look like this:
 
 ![Sample Submission](sample file.jpg "Sample submission")
 
 (If you can't see the picture make sure you download it from canvas in your working directory.)
-
-
 Please follow these instructions closely. For example, do not change the order of the loans, do not submit a list of the loan numbers you would invest in, do not invest in more (or fewer) than 200 loans, make sure the loan numbers are in column A and the choices in column B, start in cell A1, don’t forget to add your name, etc. For loans you do not want to invest you can write “0” or leave the cell empty. *Before you submit, open your file in EXCEL to make sure it looks like the sample above. Also check that the file size is not more that a few kilobytes. If it's more you are doing something wrong.*
 
 Add to the code below to do this:
@@ -552,8 +553,7 @@ lc_assessment<- read_csv("Assessment Data_2020.csv") %>%  #load the data
     issue_d = mdy(issue_d),  # lubridate::mdy() to fix date format
     term = factor(term_months),     # turn 'term' into a categorical variable
     delinq_2yrs = factor(delinq_2yrs)) # turn 'delinq_2yrs' into a categorical variable
-
-
+  
 ```
 
 After you have submitted your report I will upload a screen cast that discusses the performance of your chosen portfolios. I will also use this screen cast to illustrate the "wisdom of the crowd" principle. So please make sure you watch it.
