@@ -31,6 +31,7 @@ library(caret) # to train more advanced models (k-fold cross-validation, stepwis
 library(nnet) # to calculate the maximum value of a vector
 library(pROC) # to plot ROC curves
 library(MLmetrics) #for caret LASSO logistic regression
+library(writexl)
 
 ```
 
@@ -531,8 +532,6 @@ threshold=0.155
   profit
 paste0("Based on the validation set: Profit per loan for loan 1 is ", round(profit$x[1]*100,2), "% achieved at a threshold of 15.5%")
 paste0("The average return of all the loans would be ",round(sum(profit$x)/800*100,2),"% achieved at a threshold of 15.5%")
-
-
 ```
 
 >Q14. The file "Assessment Data_2020.csv" contains information on almost 1800 new loans. Use your best model (see previous question) to choose 200 loans to invest. For this question assume that the loss proportion is 60%. Your grade on this question will be based on the actual performance of your choices.
@@ -553,7 +552,15 @@ lc_assessment<- read_csv("Assessment Data_2020.csv") %>%  #load the data
     issue_d = mdy(issue_d),  # lubridate::mdy() to fix date format
     term = factor(term_months),     # turn 'term' into a categorical variable
     delinq_2yrs = factor(delinq_2yrs)) # turn 'delinq_2yrs' into a categorical variable
-  
+profit=(con_search2$table[1,1]*(((lc_assessment$installment)*(lc_assessment$term_months))/(lc_assessment$loan_amnt)-1)-con_search2$table[1,2]*0.6)/nrow(validation)*100
+profit
+lc_assessment<-lc_assessment%>%mutate(profit=profit)
+max<-lc_assessment%>%slice_max(profit,n=200)
+lc_assessment<-arrange(lc_assessment,desc(profit))
+lc_assessment<-lc_assessment%>%mutate(no=1:1799,invest=ifelse(no<=200,1,0),loan_number=as.numeric(loan_number))
+
+excel<- tibble(x=lc_assessment$loan_number,y=lc_assessment$invest)
+excel
 ```
 
 After you have submitted your report I will upload a screen cast that discusses the performance of your chosen portfolios. I will also use this screen cast to illustrate the "wisdom of the crowd" principle. So please make sure you watch it.
