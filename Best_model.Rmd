@@ -1,0 +1,307 @@
+---
+title: "Session 5: Workshop on classification with Logistic Regression"
+author: "Carlota Castro Perez"
+output:
+  html_document:
+    theme: cerulean
+    highlight: zenburn
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, load_libraries, include = FALSE}
+library(tidyverse) # the usual stuff: dplyr, readr, and other goodies
+library(lubridate) # to handle dates
+library(GGally) # for correlation-scatter plot matrix
+library(ggfortify) # to produce residual diagnostic plots
+library(rsample) # to split dataframe in training- & testing sets
+library(janitor) # clean_names()
+library(broom) # use broom:augment() to get tidy table with regression output, residuals, etc
+library(huxtable) # to get summary table of all models produced
+library(caret) # to train more advanced models (k-fold cross-validation, stepwise regression, LASSO)
+library(nnet) # to calculate the maximum value of a vector
+library(pROC) # to plot ROC curves
+library(MLmetrics) #for caret LASSO logistic regression
+
+```
+
+
+# Introduction
+
+Welcome to the second workshop. We will continue working with the lending club data. In this workshop we will take the perspective of an investor to the lending club. Our goal is to select a subset of the most promising loans to invest. We will do so using the method of logistic regression. Feel free to consult the R markdown file of session 4.
+
+For this workshop please submit a knitted (html) rmd file and a csv file containing your investment choices (see question 14) by the deadline posted on canvas. 25% of your grade will depend on the performance of your investment choices (i.e., question 14). The rest of the questions are equally weighted. 
+
+In answering the questions below be succinct but provide complete answers with quantitative evidence as far as possible. Feel free to discuss methods with each other and with the tutors during the workshop. As this is an individual assignment, *do not collaborate* in answering the questions below or in making investment choices. 
+
+After you have submitted your report I will upload a screen cast that discusses the performance of your chosen portfolios. I will also use this screen cast to illustrate the "wisdom of the crowd" principle. So please make sure you watch it.
+
+Enjoy the workshop!
+
+## Load the data
+
+First we need to start by loading the data.
+```{r, load_data, warning=FALSE, message=FALSE}
+
+lc_raw <- read_csv("LendingClub Data.csv",  skip=1) %>%  #since the first row is a title we want to skip it. 
+  clean_names() # use janitor::clean_names()
+```
+
+# ICE the data: Inspect, Clean, Explore
+
+Any data science engagement starts with ICE. Inspecting, Clean and Explore the data. 
+
+## Inspect the data
+
+Inspect the data to understand what different variables mean. Variable definitions can be found in the excel version of the data.
+```{r, Inspect}
+glimpse(lc_raw)
+```
+
+## Clean the data
+Are there any redundant columns and rows? Are all the variables in the correct format (e.g., numeric, factor, date)? Lets fix it. 
+
+The variable "loan_status" contains information as to whether the loan has been repaid or charged off (i.e., defaulted). Let's create a binary factor variable for this. This variable will be the focus of this workshop.
+
+```{r, clean data}
+lc_clean<- lc_raw %>%
+  dplyr::select(-x20:-x80) %>% #delete empty columns
+  filter(!is.na(int_rate)) %>%   #delete empty rows
+  mutate(
+    issue_d = mdy(issue_d),  # lubridate::mdy() to fix date format
+    term = factor(term_months),     # turn 'term' into a categorical variable
+    delinq_2yrs = factor(delinq_2yrs) # turn 'delinq_2yrs' into a categorical variable
+  ) %>% 
+  mutate(default = dplyr::recode(loan_status, 
+                      "Charged Off" = "1", 
+                      "Fully Paid" = "0"))%>%
+    mutate(default = as.factor(default)) %>%
+  dplyr::select(-emp_title,-installment, -term_months, everything()) #move some not-so-important variables to the end. 
+  glimpse(lc_clean)  
+```
+
+## Explore the data
+
+Let's explore loan defaults by creating different visualizations. We start with examining how prevalent defaults are, whether the default rate changes by loan grade or number of delinquencies, and a couple of scatter plots of defaults against loan amount and income.
+
+
+```{r, visualization of defaults, warning=FALSE}
+#bar chart of defaults
+def_vis1<-ggplot(data=lc_clean, aes(x=default)) +geom_bar(aes(y = (..count..)/sum(..count..))) + labs(x="Default, 1=Yes, 0=No", y="relative frequencies") +scale_y_continuous(labels=scales::percent) +geom_text(aes( label = scales::percent((..count..)/sum(..count..) ),y=(..count..)/sum(..count..) ), stat= "count",vjust=-0.5) 
+def_vis1
+
+#bar chart of defaults per loan grade
+def_vis2<-ggplot(data=lc_clean, aes(x=default), group=grade) +geom_bar(aes(y = (..count..)/sum(..count..), fill = factor(..x..)), stat="count")  + labs(title="Defaults by Grade", x="Default, 1=Yes, 0=No", y="relative frequencies") +scale_y_continuous(labels=scales::percent) +facet_grid(~grade) + theme(legend.position = "none") +geom_text(aes( label = scales::percent((..count..)/sum(..count..) ),y=(..count..)/sum(..count..) ), stat= "count",vjust=-0.5) 
+def_vis2
+
+#bar chart of defaults per number of Delinquencies
+def_vis3<-lc_clean %>%
+  filter(as.numeric(delinq_2yrs)<4) %>%
+  ggplot(aes(x=default), group=delinq_2yrs) +geom_bar(aes(y = (..count..)/sum(..count..), fill = factor(..x..)), stat="count")  + labs(title="Defaults by Number of Delinquencies", x="Default, 1=Yes, 0=No", y="relative frequencies")  +scale_y_continuous(labels=scales::percent) +facet_grid(~delinq_2yrs) + theme(legend.position = "none") +geom_text(aes( label = scales::percent((..count..)/sum(..count..) ),y=(..count..)/sum(..count..) ), stat= "count",vjust=-0.5)
+
+def_vis3
+
+#scatter plots 
+
+#We select 2000 random loans to display only to make the display less busy. 
+set.seed(1234)
+reduced<-lc_clean[sample(0:nrow(lc_clean), 2000, replace = FALSE),]%>%
+  mutate(default=as.numeric(default)-1) # also convert default to a numeric {0,1} to make it easier to plot.
+
+          
+# scatter plot of defaults against loan amount                         
+def_vis4<-ggplot(data=reduced, aes(y=default,x=I(loan_amnt/1000)))  + labs(y="Default, 1=Yes, 0=No", x="Loan Amnt (1000 $)") +geom_jitter(width=0, height=0.05, alpha=0.7) #We use jitter to offset the display of defaults/non-defaults to make the data easier to interpert. We have also changed the amount to 1000$ to reduce the number of zeros on the horizontal axis.
+
+def_vis4
+
+#scatter plot of defaults against loan amount.
+def_vis5<-ggplot(data=reduced, aes(y=default,x=I(annual_inc/1000)))   + labs(y="Default, 1=Yes, 0=No", x="Annual Income(1000 $)") +geom_jitter(width=0, height=0.05, alpha=0.7) +  xlim(0,400)
+
+def_vis5
+
+```
+
+We can also estimate a correlation table between defaults and other continuous variables.
+
+```{r, correlation table, warning=FALSE, message=FALSE}
+
+# correlation table using GGally::ggcor()
+# this takes a while to plot
+
+lc_clean %>% 
+    mutate(default=as.numeric(default)-1)%>%
+  select(loan_amnt, dti, annual_inc, default) %>% #keep Y variable last
+ ggcorr(method = c("pairwise", "pearson"), label_round=2, label = TRUE)
+
+```
+
+
+> Q1. Add one more visualization of your own. Describe what it shows and what you learn from it in 1-2 lines. 
+
+ 
+Insert your code here:
+```{r}
+# In the same axes, produce box plots of the interest rate for every value of delinquencies
+# boxplot with colour for different home_ownership
+def_vis3<-lc_clean %>%
+  ggplot(aes(x=default), group=home_ownership) +geom_bar(aes(y = (..count..)/sum(..count..), fill = factor(..x..)), stat="count")  + labs(title="Home Ownership", x="Default, 1=Yes, 0=No", y="relative frequencies")  +scale_y_continuous() +facet_grid(~home_ownership) + theme(legend.position = "none") + geom_text(aes( label = scales::percent((..count..)/sum(..count..) ),y=(..count..)/sum(..count..) ), stat= "count",vjust=-0.5)
+def_vis3
+```
+Insert comments here: 
+We have plotted Home Ownership types (Mortgage, None, Other, Own and Rent) against Default.
+In the first place, we see that most of the data corresponds to people that either have rented or have a mortgage for the property. The relative percentage of default for people that have rented the property is 15.17% whereas for those that have the property on a mortgage basis, the relative percentage of default is 13.34%. Hence, the values are very similar and we cannot really conclude that home ownership has an impact on default. 
+It is worth mentioning that about 10% of the total data corresponds to people that own the property. The relative default percentage for this category is 14.74%. Hence, once again this value is very similar to the previous percentages of default. So, the conclusion is once again that the default percentage doesn't depend on home ownership type.
+
+Linear vs. logistic regression for binary response variables
+
+It is certainly possible to use the OLS approach to find the line that minimizes the sum of square errors when the dependent variable is binary (i.e., default no default). In this case, the predicted values take the interpretation of a probability. We can also estimate a logistic regression instead. We do both below.
+
+
+```{r, linear and logisitc regression with binary response variable, warning=FALSE}
+
+model_lm<-lm(as.numeric(default)~I(annual_inc/1000), lc_clean)
+summary(model_lm)
+
+
+logistic1<-glm(default~I(annual_inc/1000), family="binomial", lc_clean)
+summary(logistic1)
+
+
+ggplot(data=reduced, aes(x=I(annual_inc/1000), y=default)) + geom_smooth(method="lm", se=0, aes(color="OLS"))+ geom_smooth(method = "glm", method.args = list(family = "binomial"),  se=0, aes(color="Logistic"))+ labs(y="Prob of Default", x="Annual Income(1000 $)")+  xlim(0,450)+scale_y_continuous(labels=scales::percent)+geom_jitter(width=0, height=0.05, alpha=0.7) + scale_colour_manual(name="Fitted Model", values=c("blue", "red"))
+
+
+
+
+```
+
+> Q2. Which model is more suitable for predicting probability of default, the linear regression or the logistic? Why? 
+
+ The logistic model is more suitable for predicting probability of default because linear regression could give negative values.
+
+
+# Multivariate logistic regression
+
+We can estimate logistic regression with multiple explanatory variables as well. Let's use annual_inc, term, grade, and loan amount as features. Let's call this model logistic 2.
+
+```{r, multivariate logistic regression, warning=False}
+logistic2<- glm(default~annual_inc + term + grade + loan_amnt, family="binomial", lc_clean)
+summary(logistic2)
+
+#compare the fit of logistic 1 and logistic 2
+anova(logistic1,logistic2)
+
+```
+
+```{r}
+logistic3<- glm(default~poly(annual_inc,5) + term * grade * loan_amnt, family="binomial", lc_clean)
+summary(logistic3)
+
+prob_default2<- predict(logistic3,type="response",data=lc_clean)
+summary(prob_default2)
+ROC_logistic2 <- roc(lc_clean$default,prob_default2) 
+#estimate the AUC for Logistic 2 and round it to two decimal places
+AUC2<-  round(auc(lc_clean$default,prob_default2)*100, digits=2)
+#Plot the ROC curve and display the AUC in the title
+ROC2<- ggroc(ROC_logistic2,  alpha = 0.5)+ ggtitle(paste("Model Logistic 2: AUC=",round(auc(lc_clean$default,prob_default2)*100, digits=2),"%"))  +
+geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")+geom_segment(aes(x = 1, xend = 1, y = 0, yend = 1), color="black", linetype="dashed")+geom_segment(aes(x = 1, xend = 0, y = 1, yend = 1), color="black", linetype="dashed")
+
+
+ROC2
+
+```
+```{r}
+# splitting the data into training and testing
+set.seed(1234)
+train_test_split <- initial_split(lc_clean, prop = 0.8)
+testing <- testing(train_test_split) #20% of the data is set aside for testing
+training <- training(train_test_split) #80% of the data is set aside for training
+
+
+#calculate probability of default in the training sample 
+p_in<-predict(logistic3, training, type = "response") 
+#Set the threshold to be 0.25 such that probability >0.25 indicates default
+one_or_zero<-ifelse(p_in>0.155,"1","0")
+
+p_class_in<-factor(one_or_zero,levels=levels(lc_clean$default)) 
+#Generate the confusion matrix
+con_in<-confusionMatrix(p_class_in,training$default,positive="1") 
+con_in
+  
+#ROC curve using in-sample predictions
+ROC_logistic2_in <- roc(training$default,p_in) # the first argument is a vector of outcomes and the second is a vector of probabilities associated with each outcome
+#AUC using in-sample predictions
+AUC_logistic2_in<- round(auc(training$default,p_in)*100, digits=2)
+
+#calculate probability of default out of sample 
+p_out <- predict(logistic3, testing, type = "response") 
+#Set the threshold to be 0.25 such that probability >0.25 indicates default
+one_or_zero<-ifelse(p_in>0.155,"1","0")
+
+#ROC curve using out-of-sample predictions
+ROC_logistic2_out <- roc(testing$default,p_out) 
+#AUC using out-of-sample predictions
+AUC_logistic2_out <- round(auc(testing$default,p_out)*100, digits=2)
+#plot in the same figure both ROC curves and print the AUC of both curves in the title
+
+ggroc(list("Logistic 2 In"=ROC_logistic2_in, "Logistic 2 Out"=ROC_logistic2_out)) +
+ggtitle(paste("Model Logistic 2 In: AUC=",round(auc(training$default,p_in)*100, digits=2),"%\nModel Logistic 2 Out: AUC=",round(auc(testing$default,p_out)*100, digits=2),"%"))    +
+geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+```
+```{r}
+lc_clean<-lc_clean%>%
+  mutate(def=as.factor(ifelse(default=="1","D","P")))
+set.seed(121)
+train_test_split <- initial_split(lc_clean, prop = 0.8)
+training <- training(train_test_split)
+testing <- testing(train_test_split)
+
+#LASSO logistic regression -- choosing the penalty lambda based on out-of-sample ROC metric
+trainControl <- trainControl(
+  method = "cv",
+  number = 10,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE,
+  verboseIter = TRUE
+)
+
+model_lasso <- train(def~ term*grade*loan_amnt*dti+poly(annual_inc,5),
+            data = training, 
+            method = "glmnet", 
+            trControl = trainControl,
+            metric = "ROC", # Optimize by AUC of ROC
+            family="binomial",
+             preProc = c("center", "scale"), #This option standardizes the data before running the LASSO regression
+             tuneGrid=expand.grid(
+              .alpha=1,
+              .lambda=seq(0, 0.1, length = 101))) # search for the best lambda between 0 and 0.1 in increments of 0.001 (for a total of 101 steps).
+```
+```{r}
+#Compute the out ofsample ROC curve for the LASSO model of best fit
+pred<-predict(model_lasso,testing, type = "prob")
+x<-ifelse(testing$def=="D","1","0")
+ROC_lasso <- roc(x,pred[,1])
+
+## Setting levels: control = 0, case = 1
+## Setting direction: controls < cases
+#Compare it with logistic regression (this is equivalent to lasso with lambda 0)
+logistic<-glm(def~ term*grade*loan_amnt*dti+poly(annual_inc,5), family="binomial", training)
+p_out<-predict(logistic, testing, type = "response")
+ROC_logistic_out <- roc(testing$default,p_out) 
+```
+```{r}
+#Plot the ROC curves
+ggroc(list("LASSO Logistic out-of-sample"=ROC_lasso, "Logistic out-of-sample"=ROC_logistic_out))+
+  
+  ggtitle(paste("Model LASSO Logistic out-of-sample AUC=",round(auc(x,pred[,1])*100, digits=2),"%\nModel Logistic out-of-sample AUC=",round(auc(testing$default,p_out)*100, digits=2),"%"))    +
+geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")
+```
+
